@@ -4,13 +4,18 @@ import time
 from collections import deque
 from datetime import datetime
 
+import can
+
 from temperature_page import TemperaturePage
 from acceleration_page import AccelerationPage
 from light_page import LightPage
-from can_reading import CANBusReader, read_can_bus_data
+from can_reading import CANBusReader
 
 class ModernCANBusHMI:
     def __init__(self):
+
+        self.reader = CANBusReader()
+
         self.root = tk.Tk()
         self.root.title("CAN Bus Dashboard")
         self.root.geometry("1400x900")
@@ -37,6 +42,14 @@ class ModernCANBusHMI:
             'psi': 0
         }
 
+        try:
+            self.bus = can.interface.Bus('can0', bustype='socketcan')
+        except Exception as e:
+            print(f"CAN init error: {e}")
+            self.bus = None
+
+        self.display_mode = "lux"
+        
         self.is_connected = False
         self.last_update = "Never"
         self.running = True
@@ -76,11 +89,17 @@ class ModernCANBusHMI:
                               font=('Arial', 24, 'bold'))
         title_label.pack(side='left')
         
-        self.connection_status = tk.Label(header_frame, text="● CONNECTED", 
-                                        bg='#0a0a0a', fg='#00ff88',
-                                        font=('Arial', 12, 'bold'))
+        if self.is_connected:
+            self.connection_status = tk.Label(header_frame, text="● CONNECTED", 
+                                            bg='#0a0a0a', fg='#00ff88',
+                                            font=('Arial', 12, 'bold'))
+        else:
+            self.connection_status = tk.Label(header_frame, text="● DISCONNECTED", 
+                                            bg='#0a0a0a', fg='#ff0088',
+                                            font=('Arial', 12, 'bold'))
+
         self.connection_status.pack(side='right', padx=10)
-        
+
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill='both', expand=True, padx=20, pady=10)
         
@@ -95,7 +114,34 @@ class ModernCANBusHMI:
         self.notebook.add(self.temp_page, text="🌡️ TEMPERATURE")
         
     def _create_dashboard(self):
-        frame = tk.Frame(self.notebook, bg='#0a0a0a')
+        frame = tk.Frame(self.notebook, bg='#0a0a0a') 
+        
+        switch_frame = tk.Frame(frame, bg='#0a0a0a')
+        switch_frame.pack(fill='x', padx=10, pady=5)
+        
+        self.mode_switch = tk.Button(
+            switch_frame, 
+            text="🔁 SWITCH TO RANGE", 
+            command=self._toggle_display_mode,
+            bg='#2a2a2a', 
+            fg='#00d4ff', 
+            font=('Arial', 10, 'bold'),
+            bd=1,
+            relief='solid',
+            padx=20,
+            pady=8
+        )
+        self.mode_switch.pack(side='right', padx=10)
+        
+        # Label pour indiquer le mode actuel
+        self.mode_label = tk.Label(
+            switch_frame,
+            text="Current Mode: LUX",
+            bg='#0a0a0a',
+            fg='#00ff88',
+            font=('Arial', 10, 'bold')
+        )
+        self.mode_label.pack(side='right', padx=10)
         
         top_cards_frame = tk.Frame(frame, bg='#0a0a0a')
         top_cards_frame.pack(fill='x', padx=10, pady=10)
@@ -109,7 +155,7 @@ class ModernCANBusHMI:
             ("α ALPHA", "alpha_value", "rad", "#FF9800"),
             ("θ THETA", "theta_value", "rad", "#9C27B0"),
             ("ψ PSI", "psi_value", "rad", "#4CAF50")
-        ]
+        ] 
         
         for i, (title, value_tag, unit, color) in enumerate(cards):
             card = self._create_modern_card(top_cards_frame, title, value_tag, unit, color, i)
@@ -122,7 +168,7 @@ class ModernCANBusHMI:
         
         right_plots = tk.Frame(plots_frame, bg='#0a0a0a')
         right_plots.pack(side='right', fill='both', expand=True)
-        
+
         self.plot_lux = self._create_modern_plot(left_plots, "💡 Illuminance (Lux)", 0, 1000, 0, "#FFD700")
         self.plot_accel = self._create_modern_plot(left_plots, "🌀 Anemo (m/s)", -20, 20, 1, "#00D4FF")
         self.plot_temp = self._create_modern_plot(right_plots, "🌡️ Temperature (°C)", -10, 60, 0, "#FF4444", True)
@@ -140,7 +186,31 @@ class ModernCANBusHMI:
         export_btn.pack(side='left', padx=10)
         
         return frame
-    
+
+    def _toggle_display_mode(self):
+        if self.display_mode == "lux":
+            # Sending first byte diff than 0 (MODE RANGE)
+            id = 0x11
+            data = [1, 0, 0, 1, 3, 1, 4, 1]
+            self.reader.send_message(id, data)
+            print("Sent Data:", data)
+
+            self.display_mode = "range"
+            self.mode_switch.config(text="🔁 SWITCH TO LUX")
+            self.mode_label.config(text="Current Mode: RANGE")
+        else:
+            # Sending first byte diff = 0 (MODE LUX)
+            id = 0x11
+            data = [0, 0, 0, 1, 3, 1, 4, 1]
+            self.reader.send_message(id, data)
+            print("Sent Data:", data)
+
+            self.display_mode = "lux"
+            self.mode_switch.config(text="🔁 SWITCH TO RANGE")
+            self.mode_label.config(text="Current Mode: LUX")
+        
+        self._update_plots()
+
     def _create_modern_card(self, parent, title, value_tag, unit, color, column):
         card = tk.Frame(parent, bg='#1a1a1a', relief='flat', bd=0)
         card.grid(row=0, column=column, padx=8, pady=5, sticky='nsew')
@@ -194,7 +264,20 @@ class ModernCANBusHMI:
     
     def _update_plots(self):
         if len(self.time_data) > 1:
-            self._draw_modern_plot(self.plot_lux_canvas, list(self.lux_data), (0, 1000), '#FFD700')
+            if self.display_mode == "lux":
+                data_to_plot = list(self.lux_data)
+                y_range = (0, 1000)
+                color = '#FFD700'
+                title = "💡 Illuminance (Lux)"
+            else:
+                data_to_plot = [self.current_values['range']] * len(self.time_data)
+                y_range = (0, max(data_to_plot) * 1.2 if data_to_plot else 100)
+                color = '#FF6B35'
+                title = "📏 Range (cm)"
+            
+            self.plot_lux_canvas.master.master.winfo_children()[0].winfo_children()[0].config(text=title)
+            
+            self._draw_modern_plot(self.plot_lux_canvas, data_to_plot, y_range, color)
             self._draw_modern_plot(self.plot_accel_canvas, list(self.accel_data), (-20, 20), '#00D4FF')
             self._draw_modern_plot(self.plot_temp_canvas, list(self.temp_data), (-10, 60), '#FF4444')
     
@@ -231,19 +314,26 @@ class ModernCANBusHMI:
     
     def _start_data_simulation(self):
         def generate_data():
-            #self.current_values = read_can_bus_data()
-            
-            self.lux_data.append(self.current_values['lux'])
-            self.accel_data.append(self.current_values['anemo'])
-            self.temp_data.append(self.current_values['pressure'])
-            
+            self.current_values = self.reader.read_can_bus_data()
+
+            if self.current_values is None:
+                print(f"There is no data being read")
+                return
+
+            if self.current_values['lux'] is not None:
+                self.lux_data.append(self.current_values['lux'])
+            if self.current_values['anemo'] is not None:
+                self.accel_data.append(self.current_values['anemo'])
+            if self.current_values['pressure'] is not None:
+                self.temp_data.append(self.current_values['pressure'])
+
             self.last_update = datetime.now().strftime("%H:%M:%S")
             self.is_connected = True
             
             self._update_gui()
             
             if self.running:
-                self.root.after(100, generate_data)
+                self.root.after(10, generate_data)
         
         generate_data()
     
@@ -310,5 +400,8 @@ class ModernCANBusHMI:
         self.root.mainloop()
 
 if __name__ == '__main__':
-    app = ModernCANBusHMI()
-    app.run()
+    try:
+        app = ModernCANBusHMI()
+        app.run()
+    except KeyboardInterrupt:
+        print(f"User Interruption")

@@ -1,14 +1,25 @@
 import tkinter as tk
 from tkinter import ttk
 import math
+import can
+
+from can_reading import CANBusReader
 
 class AccelerationPage(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent, bg='#0a0a0a')
         self.accel = [0, 0, 0]
         self.rotation = [0, 0, 0]
+        self.motor_speed = 0  # Variable pour stocker la vitesse du moteur
+        self.reader = CANBusReader
         self.create_widgets()
         self.update_rotation()
+
+        try:
+            self.bus = can.interface.Bus('can0', bustype='socketcan')
+        except Exception as e:
+            print(f"CAN init error: {e}")
+            self.bus = None
 
     def create_widgets(self):
         main_frame = tk.Frame(self, bg='#0a0a0a')
@@ -33,7 +44,8 @@ class AccelerationPage(tk.Frame):
         sensors = [
             ("α ALPHA", "alpha", "#FF9800"),
             ("θ THETA", "theta", "#9C27B0"), 
-            ("ψ PSI", "psi", "#4CAF50")
+            ("ψ PSI", "psi", "#4CAF50"),
+            ("ANEMO", "anemo", "#1C0FF0")
         ]
 
         for title, key, color in sensors:
@@ -56,6 +68,64 @@ class AccelerationPage(tk.Frame):
                                  font=('Arial', 10))
             unit_label.pack(side='left', padx=(5, 0))
 
+        # Frame pour le contrôle du moteur
+        motor_frame = tk.Frame(content_frame, bg='#2a2a2a', relief='flat', bd=0)
+        motor_frame.pack(fill='x', pady=15, padx=10)
+        
+        motor_title = tk.Label(motor_frame, text="🚀 MOTOR SPEED CONTROL", bg='#2a2a2a', fg='#ffffff',
+                              font=('Arial', 12, 'bold'))
+        motor_title.pack(anchor='w', padx=10, pady=(10, 5))
+        
+        # Frame pour la valeur numérique
+        motor_value_frame = tk.Frame(motor_frame, bg='#2a2a2a')
+        motor_value_frame.pack(fill='x', padx=10, pady=(5, 0))
+        
+        self.motor_value_label = tk.Label(motor_value_frame, text="0", bg='#2a2a2a', fg='#FF6B35',
+                                         font=('Arial', 16, 'bold'))
+        self.motor_value_label.pack(side='left')
+        
+        motor_unit_label = tk.Label(motor_value_frame, text="/255", bg='#2a2a2a', fg='#888888',
+                                   font=('Arial', 10))
+        motor_unit_label.pack(side='left', padx=(5, 0))
+        
+        self.motor_slider = tk.Scale(
+            motor_frame,
+            from_=0,
+            to=255,
+            orient=tk.HORIZONTAL,
+            length=250,
+            showvalue=False,
+            bg='#2a2a2a',
+            fg='#ffffff',
+            highlightbackground='#2a2a2a',
+            troughcolor='#1a1a1a',
+            activebackground='#FF6B35',
+            sliderrelief='flat',
+            sliderlength=20,
+            command=self._on_motor_speed_change
+        )
+        
+        # Style personnalisé pour le slider
+        self.motor_slider.configure(
+            background='#2a2a2a',
+            troughcolor='#1a1a1a',
+            activebackground='#FF6B35'
+        )
+        
+        self.motor_slider.pack(fill='x', padx=10, pady=(5, 15))
+        
+        # Labels min/max
+        slider_labels_frame = tk.Frame(motor_frame, bg='#2a2a2a')
+        slider_labels_frame.pack(fill='x', padx=10, pady=(0, 10))
+        
+        min_label = tk.Label(slider_labels_frame, text="0", bg='#2a2a2a', fg='#888888',
+                            font=('Arial', 9))
+        min_label.pack(side='left')
+        
+        max_label = tk.Label(slider_labels_frame, text="255", bg='#2a2a2a', fg='#888888',
+                            font=('Arial', 9))
+        max_label.pack(side='right')
+
         visualization_frame = tk.Frame(main_frame, bg='#0a0a0a')
         visualization_frame.pack(side='right', fill='both', expand=True)
 
@@ -69,20 +139,32 @@ class AccelerationPage(tk.Frame):
                                     highlightthickness=2, highlightbackground='#00d4ff')
         self.cube_canvas.pack(expand=True, pady=20)
 
+    def _on_motor_speed_change(self, value):
+        try:
+            id = 0x03
+            data = [int(value), 0, 0, 1, 3, 1, 4, 1]
+            speed = hex(int(value))
+            self.reader.send_message(self, id, data)
+            print(f"Commanding motor speed: {speed}")
+        except ValueError:
+            pass
+
     def set_accel(self, x, y, z):
         self.accel = [x, y, z]
 
     def update_rotation(self):
         ax, ay, az = self.accel
-        self.rotation[0] += ax * 2
-        self.rotation[1] += ay * 2
-        self.rotation[2] += az * 2
+        self.rotation[0] = ax * 2
+        self.rotation[1] = ay * 2
+        self.rotation[2] = az * 2
         
         self.draw_modern_cube()
         
         self.alpha_label.config(text=f"{ax:.2f}")
         self.theta_label.config(text=f"{ay:.2f}")
         self.psi_label.config(text=f"{az:.2f}")
+
+        self.anemo_label.config(text=f"{az:.2f}")
         
         self.after(30, self.update_rotation)
 
